@@ -1,0 +1,57 @@
+name: Deploy Next.js to S3 + CloudFront
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  id-token: write     # OIDC
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build & Export (static)
+        run: npm run build   # next build && next export (per your package.json)
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.ROLETOASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Long-cache immutable assets (exclude HTML)
+      - name: Sync assets
+        run: |
+          aws s3 sync ./out s3://${{ secrets.S3_BUCKET }} \
+            --exclude "*.html" \
+            --cache-control "public,max-age=31536000,immutable" \
+            --delete
+
+      # Fresh HTML so releases show immediately
+      - name: Sync HTML
+        run: |
+          aws s3 sync ./out s3://${{ secrets.S3_BUCKET }} \
+            --exclude "*" --include "*.html" \
+            --cache-control "no-cache, no-store, must-revalidate"
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}" \
+            --paths "${{ vars.INVALIDATION_PATHS || '/*' }}"
